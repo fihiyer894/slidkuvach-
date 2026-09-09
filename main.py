@@ -41,7 +41,7 @@ LESSONS = [
     {"num": 1, "start": "09:00", "end": "10:20"},
     {"num": 2, "start": "10:40", "end": "12:00"},
     {"num": 3, "start": "12:20", "end": "13:40"},
-    {"num": 4, "start": "21:00", "end": "21:10"},
+    {"num": 4, "start": "13:50", "end": "15:10"},
 ]
 
 def build_reminders():
