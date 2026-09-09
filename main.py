@@ -1,6 +1,7 @@
 import asyncio
 import os
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 from aiohttp import web
@@ -15,12 +16,13 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 GROUP_ID = int(os.getenv("GROUP_ID", 0))
 WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "")
 WEBHOOK_PATH = "/webhook"
-
-# Render автоматически передает порт в переменную PORT
 PORT = int(os.getenv("PORT", 8080))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+# --- Часовой пояс Киева ---
+KYIV_TZ = ZoneInfo("Europe/Kyiv")
 
 # --- Чтение локального файла users.txt ---
 USERS_FILE = "users.txt"
@@ -28,6 +30,7 @@ USERS_FILE = "users.txt"
 def load_watchlist() -> set:
     if os.path.exists(USERS_FILE):
         with open(USERS_FILE, "r", encoding="utf-8") as f:
+            # .strip() удаляет скрытые пробелы/переносы строк
             return {int(line.strip()) for line in f if line.strip().isdigit()}
     return set()
 
@@ -38,7 +41,7 @@ LESSONS = [
     {"num": 1, "start": "09:00", "end": "10:20"},
     {"num": 2, "start": "10:40", "end": "12:00"},
     {"num": 3, "start": "12:20", "end": "13:40"},
-    {"num": 4, "start": "18:00", "end": "18:10"},
+    {"num": 4, "start": "21:00", "end": "21:10"},
 ]
 
 def build_reminders():
@@ -50,11 +53,11 @@ def build_reminders():
         
         for mins in [20, 10, 5]:
             t_start = (start_dt - timedelta(minutes=mins)).strftime("%H:%M")
-            msg_start = f"⏰ **До начала {num}-й пары осталось {mins} минут!**\n🕒 Время: {lesson['start']} — {lesson['end']}"
+            msg_start = f"⏰ <b>До начала {num}-й пары осталось {mins} минут!</b>\n🕒 Время: {lesson['start']} — {lesson['end']}"
             reminders.setdefault(t_start, []).append(msg_start)
             
             t_end = (end_dt - timedelta(minutes=mins)).strftime("%H:%M")
-            msg_end = f"⏳ **До конца {num}-й пары осталось {mins} минут!**\n🕒 Конец в {lesson['end']}"
+            msg_end = f"⏳ <b>До конца {num}-й пары осталось {mins} минут!</b>\n🕒 Конец в {lesson['end']}"
             reminders.setdefault(t_end, []).append(msg_end)
             
     return reminders
@@ -64,14 +67,15 @@ async def schedule_loop():
     last_sent_minute = ""
 
     while True:
-        now = datetime.now()
+        # Проверка времени по часовому поясу Киева
+        now = datetime.now(KYIV_TZ)
         current_time = now.strftime("%H:%M")
 
         if current_time != last_sent_minute and current_time in reminders:
             if GROUP_ID != 0:
                 for text in reminders[current_time]:
                     try:
-                        await bot.send_message(chat_id=GROUP_ID, text=text, parse_mode="Markdown")
+                        await bot.send_message(chat_id=GROUP_ID, text=text, parse_mode="HTML")
                     except Exception as e:
                         print(f"Ошибка отправки напоминания: {e}")
             last_sent_minute = current_time
@@ -96,17 +100,23 @@ async def monitor_messages(message: types.Message):
             chat_id_str = str(message.chat.id).replace("-100", "")
             msg_link = f"https://t.me/c/{chat_id_str}/{message.message_id}"
 
-        date_str = message.date.strftime("%Y-%m-%d %H:%M:%S")
+        # Переводим время отправки в Киевский часовой пояс
+        msg_date = message.date.astimezone(KYIV_TZ) if message.date else datetime.now(KYIV_TZ)
+        date_str = msg_date.strftime("%Y-%m-%d %H:%M:%S")
+        text_content = message.text or message.caption or 'Медиа/Файл'
         
         report = (
-            f"🚨 **Обнаружена активность цели!**\n\n"
-            f"👤 **Пользователь:** {full_name} ({username})\n"
-            f"🆔 **ID:** `{user_id}`\n"
-            f"🕒 **Время:** {date_str}\n\n"
-            f"💬 **Текст:**\n_{message.text or message.caption or 'Медиа/Файл'}_\n\n"
-            f"🔗 **Ссылка:** {msg_link}"
+            f"🚨 <b>Обнаружена активность цели!</b>\n\n"
+            f"👤 <b>Пользователь:</b> {full_name} ({username})\n"
+            f"🆔 <b>ID:</b> <code>{user_id}</code>\n"
+            f"🕒 <b>Время:</b> {date_str}\n\n"
+            f"💬 <b>Текст:</b>\n<i>{text_content}</i>\n\n"
+            f"🔗 <a href='{msg_link}'>Ссылка на сообщение</a>"
         )
-        await bot.send_message(chat_id=ADMIN_ID, text=report, parse_mode="Markdown")
+        try:
+            await bot.send_message(chat_id=ADMIN_ID, text=report, parse_mode="HTML")
+        except Exception as e:
+            print(f"Ошибка отправки отчета админу: {e}")
 
 # --- Управление для Админа ---
 @dp.message(CommandStart(), F.from_user.id == ADMIN_ID)
@@ -115,7 +125,7 @@ async def start_cmd(message: types.Message):
         keyboard=[[KeyboardButton(text="🔄 Обновить users.txt"), KeyboardButton(text="📊 Анализ")]],
         resize_keyboard=True
     )
-    await message.reply("Панель активирована. Бот работает через Webhook.", reply_markup=keyboard)
+    await message.reply("Панель активирована. Бот работает (Webhooks + Киевское время).", reply_markup=keyboard)
 
 @dp.message(F.text == "🔄 Обновить users.txt", F.from_user.id == ADMIN_ID)
 async def manual_sync(message: types.Message):
@@ -130,7 +140,7 @@ async def analysis_cmd(message: types.Message):
         return
 
     msg = await message.reply("🔄 Проверяю участников...")
-    report_lines = ["📊 **Отчет Анализа Целей:**\n"]
+    report_lines = ["📊 <b>Отчет Анализа Целей:</b>\n"]
     
     for uid in watchlist_ids:
         try:
@@ -140,9 +150,9 @@ async def analysis_cmd(message: types.Message):
             fname = user.full_name
             status = member.status
             
-            report_lines.append(f"🔹 ID: `{uid}` | {fname} ({uname})\n  Статус в группе: `{status}`\n")
+            report_lines.append(f"🔹 ID: <code>{uid}</code> | {fname} ({uname})\n  Статус в группе: <code>{status}</code>\n")
         except Exception:
-            report_lines.append(f"🔹 ID: `{uid}` — не найден в группе\n")
+            report_lines.append(f"🔹 ID: <code>{uid}</code> — не найден в группе\n")
         await asyncio.sleep(0.2)
             
     final_report = "\n".join(report_lines)
@@ -152,7 +162,7 @@ async def analysis_cmd(message: types.Message):
             f.write(final_report)
         await message.reply_document(FSInputFile("analysis_report.txt"), caption="Отчет файлом.")
     else:
-        await msg.edit_text(final_report, parse_mode="Markdown")
+        await msg.edit_text(final_report, parse_mode="HTML")
 
 # --- Настройка Webhook и Web-сервера ---
 async def on_startup(bot: Bot):
