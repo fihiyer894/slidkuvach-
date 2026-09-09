@@ -3,14 +3,21 @@ import os
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, FSInputFile
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 GROUP_ID = int(os.getenv("GROUP_ID", 0))
+WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "")
+WEBHOOK_PATH = "/webhook"
+
+# Render автоматически передает порт в переменную PORT
+PORT = int(os.getenv("PORT", 8080))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -108,7 +115,7 @@ async def start_cmd(message: types.Message):
         keyboard=[[KeyboardButton(text="🔄 Обновить users.txt"), KeyboardButton(text="📊 Анализ")]],
         resize_keyboard=True
     )
-    await message.reply("Панель активирована. Бот в дежурном режиме.", reply_markup=keyboard)
+    await message.reply("Панель активирована. Бот работает через Webhook.", reply_markup=keyboard)
 
 @dp.message(F.text == "🔄 Обновить users.txt", F.from_user.id == ADMIN_ID)
 async def manual_sync(message: types.Message):
@@ -147,11 +154,29 @@ async def analysis_cmd(message: types.Message):
     else:
         await msg.edit_text(final_report, parse_mode="Markdown")
 
-# --- Запуск ---
-async def main():
+# --- Настройка Webhook и Web-сервера ---
+async def on_startup(bot: Bot):
+    webhook_url = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+    await bot.set_webhook(webhook_url)
     asyncio.create_task(schedule_loop())
-    print(f"Бот запущен! В слежке: {len(watchlist_ids)} ID из users.txt")
-    await dp.start_polling(bot)
+
+async def health_check(request):
+    return web.Response(text="Bot is running!")
+
+def main():
+    dp.startup.register(on_startup)
+    
+    app = web.Application()
+    app.router.add_get("/", health_check)
+    
+    webhook_requests_handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+    )
+    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
+    setup_application(app, dp, bot=bot)
+    
+    web.run_app(app, host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
